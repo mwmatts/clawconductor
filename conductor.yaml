@@ -1,0 +1,12 @@
+# ClawConductor configuration
+
+routing_lane:
+  model: anthropic/claude-sonnet-4-6
+
+escalation_lane:
+  model: anthropic/claude-opus-4-6
+
+# LiteLLM virtual keys per lane (set to your actual keys)
+litellm_keys:
+  routing: sk-routing-PLACEHOLDER
+  escalation: sk-escalation-PLACEHOLDER

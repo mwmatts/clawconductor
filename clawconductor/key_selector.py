@@ -1,0 +1,43 @@
+"""LiteLLM virtual key selection.
+
+Picks the correct LiteLLM virtual key based on the chosen lane/model so
+that budget and rate-limit policies are applied per-lane.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict
+
+import yaml
+
+
+def load_keys(config_path: str = "conductor.yaml") -> Dict[str, str]:
+    """Load lane -> virtual-key mapping from config."""
+    try:
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        cfg = {}
+    return cfg.get("litellm_keys", {})
+
+
+def select_key(
+    lane: str,
+    *,
+    keys: Dict[str, str] | None = None,
+    config_path: str = "conductor.yaml",
+) -> str | None:
+    """Return the LiteLLM virtual key for the given lane.
+
+    Parameters
+    ----------
+    lane:
+        ``"routing"`` or ``"escalation"``.
+    keys:
+        Pre-loaded key map.  If None, loads from *config_path*.
+
+    Returns the virtual key string, or None if not configured.
+    """
+    if keys is None:
+        keys = load_keys(config_path)
+    return keys.get(lane)
