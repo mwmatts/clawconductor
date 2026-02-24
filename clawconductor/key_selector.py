@@ -21,6 +21,27 @@ def load_keys(config_path: str = "conductor.yaml") -> Dict[str, str]:
     return cfg.get("litellm_keys", {})
 
 
+def resolve_model(
+    tier: str,
+    *,
+    tiers: Dict[str, str] | None = None,
+    config_path: str = "conductor.yaml",
+) -> str | None:
+    """Resolve a tier name to a model string.
+
+    Reads from the ``tiers`` section of conductor.yaml, or from a
+    pre-loaded tier map.
+    """
+    if tiers is None:
+        try:
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            cfg = {}
+        tiers = cfg.get("tiers", {})
+    return tiers.get(tier)
+
+
 def select_key(
     lane: str,
     *,

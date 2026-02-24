@@ -24,16 +24,16 @@ def test_group_a_escalates():
     assert "A" in decision.triggered_groups
 
 
-def test_custom_config_models():
+def test_custom_config_tiers():
     cfg = {
-        "routing_lane": {"model": "gpt-4o-mini"},
-        "escalation_lane": {"model": "o1-preview"},
+        "routing_lane": {"tier": "standard"},
+        "escalation_lane": {"tier": "advanced"},
     }
     decision = route(_base_ctx(task_class="plan"), config=cfg)
-    assert decision.model == "o1-preview"
+    assert decision.tier == "advanced"
 
     decision = route(_base_ctx(), config=cfg)
-    assert decision.model == "gpt-4o-mini"
+    assert decision.tier == "standard"
 
 
 def test_loop_guard_blocks_second_escalation():

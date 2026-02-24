@@ -1,10 +1,16 @@
 # ClawConductor configuration
 
 routing_lane:
-  model: anthropic/claude-sonnet-4-6
+  tier: standard
 
 escalation_lane:
-  model: anthropic/claude-opus-4-6
+  tier: advanced
+
+# Tier → model resolution (used by key_selector.resolve_model)
+tiers:
+  lightweight: gemini-2.5-flash
+  standard: gemini-2.5-flash
+  advanced: gemini-2.5-flash
 
 # LiteLLM virtual keys per lane (set to your actual keys)
 litellm_keys:

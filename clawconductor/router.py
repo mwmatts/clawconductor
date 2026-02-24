@@ -20,13 +20,13 @@ class RoutingDecision:
     task_id: str
     triggered_groups: Set[str]
     lane: str  # "routing" or "escalation"
-    model: str
+    tier: str
     reason: str
 
 
 _DEFAULT_CONFIG = {
-    "routing_lane": {"model": "anthropic/claude-sonnet-4-6"},
-    "escalation_lane": {"model": "anthropic/claude-opus-4-6"},
+    "routing_lane": {"tier": "standard"},
+    "escalation_lane": {"tier": "advanced"},
 }
 
 
@@ -84,6 +84,6 @@ def route(
         task_id=task_id,
         triggered_groups=groups,
         lane=lane,
-        model=lane_cfg["model"],
+        tier=lane_cfg["tier"],
         reason=reason,
     )
