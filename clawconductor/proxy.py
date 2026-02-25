@@ -106,15 +106,17 @@ def _build_ctx(body: dict, task_id: str) -> dict:
 # --- Forwarding ---
 
 async def _stream_response(
-    client: httpx.AsyncClient,
-    method: str,
     url: str,
     headers: dict,
     body: dict,
 ) -> AsyncIterator[bytes]:
-    async with client.stream(method, url, headers=headers, json=body, timeout=120) as r:
-        async for chunk in r.aiter_bytes():
-            yield chunk
+    client = httpx.AsyncClient()
+    try:
+        async with client.stream("POST", url, headers=headers, json=body, timeout=120) as r:
+            async for chunk in r.aiter_bytes():
+                yield chunk
+    finally:
+        await client.aclose()
 
 
 @app.post("/v1/chat/completions")
@@ -158,13 +160,13 @@ async def chat_completions(request: Request) -> Any:
     stream = forwarded_body.get("stream", False)
 
     try:
-        async with httpx.AsyncClient() as client:
-            if stream:
-                return StreamingResponse(
-                    _stream_response(client, "POST", upstream, forward_headers, forwarded_body),
-                    media_type="text/event-stream",
-                )
-            else:
+        if stream:
+            return StreamingResponse(
+                _stream_response(upstream, forward_headers, forwarded_body),
+                media_type="text/event-stream",
+            )
+        else:
+            async with httpx.AsyncClient() as client:
                 r = await client.post(
                     upstream,
                     headers=forward_headers,
