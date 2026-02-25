@@ -179,7 +179,13 @@ async def chat_completions(request: Request) -> Any:
                     timeout=120,
                 )
                 _failure_counts[task_id] = 0  # reset on success
-                return r.json()
+                response_data = r.json()
+                # Rewrite model field to actual model name for status bar observability
+                tier_display = _config.get("tier_display_models", {})
+                actual_model = tier_display.get(decision.tier)
+                if actual_model and isinstance(response_data, dict):
+                    response_data["model"] = actual_model
+                return response_data
 
     except httpx.TimeoutException:
         _failure_counts[task_id] += 1

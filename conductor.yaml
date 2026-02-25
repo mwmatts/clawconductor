@@ -14,6 +14,12 @@ tiers:
   standard: tier/standard
   advanced: tier/advanced
 
+# Actual model names to surface in responses (for status bar observability)
+tier_display_models:
+  lightweight: claude-haiku-4-5-20251001
+  standard: claude-sonnet-4-6
+  advanced: claude-sonnet-4-6
+
 # LiteLLM virtual keys per lane (set to your actual keys)
 litellm_keys:
   routing: os.environ/CLAWCONDUCTOR_ROUTING_KEY
