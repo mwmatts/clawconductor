@@ -6,6 +6,7 @@ that budget and rate-limit policies are applied per-lane.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
 import yaml
@@ -61,4 +62,7 @@ def select_key(
     """
     if keys is None:
         keys = load_keys(config_path)
-    return keys.get(lane)
+    value = keys.get(lane)
+    if value and value.startswith("os.environ/"):
+        return os.environ.get(value[len("os.environ/"):])
+    return value

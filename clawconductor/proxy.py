@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .classifier import GROUP_A_FLAGS
+from .key_selector import select_key
 from .loop_guard import LoopGuard
 from .router import route
 
@@ -152,10 +153,14 @@ async def chat_completions(request: Request) -> Any:
     # Forward to LiteLLM
     upstream = f"{_upstream_url}/v1/chat/completions"
     forward_headers = {"Content-Type": "application/json"}
-    # Pass through Authorization if present
-    auth = request.headers.get("Authorization")
-    if auth:
-        forward_headers["Authorization"] = auth
+    # Use per-lane virtual key if configured; fall back to caller's key
+    lane_key = select_key(decision.lane, config_path="conductor.yaml")
+    if lane_key:
+        forward_headers["Authorization"] = f"Bearer {lane_key}"
+    else:
+        auth = request.headers.get("Authorization")
+        if auth:
+            forward_headers["Authorization"] = auth
 
     stream = forwarded_body.get("stream", False)
 

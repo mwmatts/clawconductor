@@ -16,5 +16,5 @@ tiers:
 
 # LiteLLM virtual keys per lane (set to your actual keys)
 litellm_keys:
-  routing: sk-routing-PLACEHOLDER
-  escalation: sk-escalation-PLACEHOLDER
+  routing: os.environ/CLAWCONDUCTOR_ROUTING_KEY
+  escalation: os.environ/CLAWCONDUCTOR_ESCALATION_KEY
