@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import subprocess
 from collections import defaultdict
 from typing import Any, AsyncIterator, Dict
@@ -58,6 +59,40 @@ def _startup() -> None:
 
 
 app.add_event_handler("startup", _startup)
+
+
+# --- Telegram escalation notification ---
+
+_TELEGRAM_BOT_TOKEN = os.environ.get("CLAWCONDUCTOR_TELEGRAM_BOT_TOKEN", "")
+_TELEGRAM_CHAT_ID = os.environ.get("CLAWCONDUCTOR_TELEGRAM_CHAT_ID", "")
+
+
+async def _notify_escalation(actual_model: str, triggered_groups: set, reason: str) -> None:
+    """Fire-and-forget: send a Telegram message when a request is escalated."""
+    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
+        return
+    group_labels = {
+        "A": "task keyword",
+        "B": "consecutive failures",
+        "C": "conflicting constraints",
+        "D": "validation failed on retry",
+        "E": "high-stakes action",
+    }
+    group_desc = ", ".join(group_labels.get(g, g) for g in sorted(triggered_groups))
+    text = (
+        f"⚡ *Escalating to {actual_model}*\n"
+        f"Reason: {reason}\n"
+        f"Triggers: {group_desc}"
+    )
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage",
+                data={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+                timeout=3,
+            )
+    except Exception as e:
+        logger.warning("Telegram escalation notify failed (non-fatal): %s", e)
 
 
 # --- Session model patching ---
@@ -177,6 +212,14 @@ async def chat_completions(request: Request) -> Any:
         task_id, decision.lane, decision.tier, model_alias,
         sorted(decision.triggered_groups),
     )
+
+    # Notify on escalation (fire-and-forget)
+    if decision.lane == "escalation":
+        tier_display = _config.get("tier_display_models", {})
+        actual_model = tier_display.get(decision.tier, decision.tier)
+        asyncio.create_task(
+            _notify_escalation(actual_model, decision.triggered_groups, decision.reason)
+        )
 
     # Rewrite model field
     forwarded_body = {**body, "model": model_alias}
