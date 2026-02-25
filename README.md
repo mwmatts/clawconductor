@@ -316,6 +316,37 @@ pytest tests/ -v
 
 ---
 
+## Performance
+
+ClawConductor is designed to add negligible overhead relative to the LiteLLM/Anthropic round-trip.
+
+### Per-request overhead (blocking, on the critical path)
+
+| Operation | Cost |
+|---|---|
+| JSON parse + task_id hash | ~0 ms |
+| Group A-E classification | ~0 ms (pure Python, in-memory) |
+| Routing decision | ~0 ms |
+| Structured log write | ~1 ms |
+| **Total ClawConductor overhead** | **~1–2 ms per request** |
+
+For comparison, the LiteLLM → Anthropic API call typically takes **500 ms – 5 s** depending on model and output length. ClawConductor's contribution is rounding error.
+
+### Background tasks (non-blocking, do not delay the response)
+
+| Operation | Cost | When |
+|---|---|---|
+| `sessions.patch` subprocess | ~100–300 ms | Only when the active model changes |
+| Telegram escalation notification | ~200–500 ms | Only when a request is escalated |
+
+Both are fire-and-forget `asyncio.create_task()` calls — they run after the response has already been returned to the caller.
+
+### Config loading
+
+`conductor.yaml` is read once at startup and cached in memory. All per-request operations — including lane key resolution — use the cached `_config` dict. There is no disk I/O on the request path.
+
+---
+
 ## Observability
 
 Every routing decision is logged as a JSON line to `~/.openclaw/logs/clawconductor.log`:
