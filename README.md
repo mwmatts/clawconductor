@@ -364,3 +364,7 @@ Every routing decision is logged as a JSON line to `~/.openclaw/logs/clawconduct
   "reason": "triggered groups: ['A']"
 }
 ```
+
+---
+
+MIT License — see [LICENSE](LICENSE) for details.
