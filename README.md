@@ -294,6 +294,80 @@ tail -f ~/.openclaw/logs/clawconductor.log
 
 ---
 
+## Uninstall
+
+### 1. Stop and remove the service
+
+```bash
+systemctl --user stop clawconductor.service
+systemctl --user disable clawconductor.service
+rm ~/.config/systemd/user/clawconductor.service
+systemctl --user daemon-reload
+```
+
+### 2. Revert OpenClaw to talk directly to LiteLLM
+
+In `~/.openclaw/openclaw.json`, restore the original LiteLLM base URL:
+
+```json
+{
+  "models": {
+    "providers": {
+      "litellm": {
+        "baseUrl": "http://localhost:4000",
+        "api": "openai-completions"
+      }
+    }
+  }
+}
+```
+
+### 3. Remove environment variables
+
+Remove the following lines from your env file (`~/.openclaw/.env`):
+
+```bash
+CLAWCONDUCTOR_ROUTING_KEY=...
+CLAWCONDUCTOR_ESCALATION_KEY=...
+CLAWCONDUCTOR_TELEGRAM_BOT_TOKEN=...
+CLAWCONDUCTOR_TELEGRAM_CHAT_ID=...
+```
+
+### 4. Delete the LiteLLM virtual keys (optional)
+
+```bash
+# List keys to find the IDs
+curl -s -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  "http://localhost:4000/key/list?return_full_object=true" | grep -E '"key"|"key_alias"'
+
+# Delete each key by its token value
+curl -X POST http://localhost:4000/key/delete \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"keys": ["sk-clawconductor-routing-key-here"]}'
+
+curl -X POST http://localhost:4000/key/delete \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"keys": ["sk-clawconductor-escalation-key-here"]}'
+```
+
+### 5. Remove the tier aliases from LiteLLM (optional)
+
+Remove the `tier/lightweight`, `tier/standard`, and `tier/advanced` entries from your `litellm-config.yaml`, then restart LiteLLM:
+
+```bash
+systemctl --user restart litellm.service
+```
+
+### 6. Delete the repository
+
+```bash
+rm -rf /path/to/clawconductor
+```
+
+---
+
 ## Key Files
 
 | File | Purpose |
