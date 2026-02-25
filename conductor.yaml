@@ -1,5 +1,7 @@
 # ClawConductor configuration
 
+upstream_url: http://localhost:4000
+
 routing_lane:
   tier: standard
 
@@ -8,9 +10,9 @@ escalation_lane:
 
 # Tier → model resolution (used by key_selector.resolve_model)
 tiers:
-  lightweight: gemini-2.5-flash
-  standard: gemini-2.5-flash
-  advanced: gemini-2.5-flash
+  lightweight: tier/lightweight
+  standard: tier/standard
+  advanced: tier/advanced
 
 # LiteLLM virtual keys per lane (set to your actual keys)
 litellm_keys:

@@ -8,6 +8,9 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "pyyaml>=6.0",
+        "fastapi>=0.110.0",
+        "uvicorn[standard]>=0.29.0",
+        "httpx>=0.27.0",
     ],
     extras_require={
         "dev": ["pytest>=7.0"],
