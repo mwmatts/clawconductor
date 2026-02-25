@@ -1,21 +1,73 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- Dark background -->
+  <!-- Background -->
   <rect width="64" height="64" rx="10" fill="#12111c"/>
 
-  <!-- Baton shaft (gold) -->
-  <line x1="10" y1="54" x2="40" y2="23"
-        stroke="#e8b830" stroke-width="5" stroke-linecap="round"/>
+  <!-- TAIL FAN -->
+  <ellipse cx="32" cy="62" rx="5"   ry="2"   fill="#b01818"/>
+  <ellipse cx="25" cy="60" rx="4.5" ry="1.8" fill="#b01818" transform="rotate(-22 25 60)"/>
+  <ellipse cx="39" cy="60" rx="4.5" ry="1.8" fill="#b01818" transform="rotate(22 39 60)"/>
 
-  <!-- Three routing/claw lines fanning from baton tip -->
-  <line x1="40" y1="23" x2="57" y2="8"
-        stroke="#4090ff" stroke-width="2" stroke-linecap="round"/>
-  <line x1="40" y1="23" x2="60" y2="23"
-        stroke="#6860ff" stroke-width="2.5" stroke-linecap="round"/>
-  <line x1="40" y1="23" x2="56" y2="38"
-        stroke="#9840e8" stroke-width="3" stroke-linecap="round"/>
+  <!-- ABDOMEN segments -->
+  <ellipse cx="32" cy="55" rx="7"   ry="4"   fill="#c41c1c"/>
+  <ellipse cx="32" cy="47" rx="8.5" ry="5"   fill="#d02020"/>
 
-  <!-- Handle knob -->
-  <circle cx="10" cy="54" r="7"   fill="#b87c18"/>
-  <circle cx="10" cy="54" r="4.5" fill="#e8b830"/>
-  <circle cx="10" cy="54" r="2.5" fill="#ffd870"/>
+  <!-- WALKING LEGS -->
+  <line x1="24" y1="45" x2="16" y2="50" stroke="#b41818" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="24" y1="48" x2="14" y2="54" stroke="#b41818" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="25" y1="51" x2="17" y2="57" stroke="#b41818" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="40" y1="45" x2="48" y2="50" stroke="#b41818" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="40" y1="48" x2="50" y2="54" stroke="#b41818" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="39" y1="51" x2="47" y2="57" stroke="#b41818" stroke-width="1.5" stroke-linecap="round"/>
+
+  <!-- LEFT ARM -->
+  <line x1="21" y1="35" x2="12" y2="42" stroke="#d02020" stroke-width="5" stroke-linecap="round"/>
+  <!-- LEFT CLAW (resting) -->
+  <ellipse cx="10" cy="46" rx="5.5" ry="4" fill="#c42020" transform="rotate(-15 10 46)"/>
+  <path d="M7 43 Q4 40 6 37 Q9 35 12 38" fill="#a01818"/>
+  <path d="M7 49 Q4 52 7 54 Q11 55 13 51" fill="#a01818"/>
+
+  <!-- CARAPACE (main body shell) -->
+  <ellipse cx="32" cy="36" rx="12" ry="10" fill="#e02828"/>
+  <ellipse cx="29" cy="32" rx="5"  ry="3.5" fill="#f04040" opacity="0.22"/>
+
+  <!-- RIGHT ARM (raised — conducting!) -->
+  <line x1="43" y1="31" x2="52" y2="18" stroke="#d02020" stroke-width="5" stroke-linecap="round"/>
+  <!-- RIGHT CLAW (gripping baton) -->
+  <ellipse cx="53" cy="15" rx="5" ry="3.5" fill="#c42020" transform="rotate(35 53 15)"/>
+  <path d="M50 11 Q48 8 51 6 Q55 5 56 9"  fill="#a01818"/>
+  <path d="M56 16 Q59 15 60 12 Q60 9 57 9" fill="#a01818"/>
+
+  <!-- HEAD -->
+  <ellipse cx="32" cy="27" rx="9" ry="7.5" fill="#e02828"/>
+  <ellipse cx="30" cy="24" rx="3.5" ry="2.5" fill="#f04848" opacity="0.2"/>
+
+  <!-- ANTENNAE (drawn before hat so brim overlaps their base) -->
+  <path d="M25 22 Q18 16 11 8" stroke="#c02020" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+  <path d="M39 22 Q46 16 53 8" stroke="#c02020" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+
+  <!-- CONDUCTOR TOP HAT -->
+  <rect x="25" y="5" width="14" height="14" rx="1.5" fill="#181818"/>
+  <rect x="26.5" y="6.5" width="2.5" height="10" rx="1" fill="#262626"/>
+  <rect x="25" y="16" width="14" height="2.5" fill="#0e0e0e"/>
+  <ellipse cx="32" cy="19.5" rx="12" ry="2.8" fill="#181818"/>
+
+  <!-- EYES ON STALKS (peek from under hat brim) -->
+  <line x1="26" y1="22" x2="21" y2="19" stroke="#c02020" stroke-width="3" stroke-linecap="round"/>
+  <line x1="38" y1="22" x2="43" y2="19" stroke="#c02020" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="20" cy="18" r="3.5" fill="#080808"/>
+  <circle cx="44" cy="18" r="3.5" fill="#080808"/>
+  <circle cx="19" cy="17" r="1.2" fill="white"/>
+  <circle cx="43" cy="17" r="1.2" fill="white"/>
+
+  <!-- BOW TIE -->
+  <path d="M28.5 33 L31.5 35.5 L28.5 38 Z" fill="white"/>
+  <path d="M35.5 33 L32.5 35.5 L35.5 38 Z" fill="white"/>
+  <circle cx="32" cy="35.5" r="1.8" fill="#e0e0e0"/>
+
+  <!-- SHIRT FRONT -->
+  <path d="M30 38 Q32 44 34 38" fill="white" opacity="0.7"/>
+
+  <!-- BATON -->
+  <line x1="55" y1="9" x2="62" y2="3" stroke="#ede0a0" stroke-width="2.2" stroke-linecap="round"/>
+  <circle cx="62" cy="3" r="2.2" fill="#d4b840"/>
 </svg>
