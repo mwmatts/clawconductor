@@ -113,6 +113,7 @@ async def _stream_response(
 
 
 @app.post("/v1/chat/completions")
+@app.post("/chat/completions")
 async def chat_completions(request: Request) -> Any:
     try:
         body = await request.json()
