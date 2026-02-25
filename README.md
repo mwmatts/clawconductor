@@ -21,6 +21,8 @@ ClawConductor solves this transparently. It intercepts every request, evaluates 
 - **Routes** every request to a lightweight model (Haiku) by default
 - **Escalates** automatically to a more capable model (Sonnet) when task complexity triggers are detected
 - **Notifies** you via Telegram when escalation happens, with the reason
+- **Falls back** to a free model (Gemini 2.5 Flash) when a lane's daily budget is exceeded — automatically, without dropping the request
+- **Restores** the paid model automatically at the daily budget reset, or immediately when you bump the budget
 - **Updates** the OpenClaw TUI status bar to show the real model in use after every response
 - **Logs** every routing decision as structured JSON for observability
 - **Tracks** spend separately per lane using LiteLLM virtual keys
@@ -37,19 +39,19 @@ ClawConductor (port 8765)          ← you are here
   │  - Classifies request (Groups A-E)
   │  - Selects per-lane virtual key
   │  - Rewrites model field to tier alias
-  │  - Fires Telegram notification on escalation
+  │  - Fires Telegram notification on escalation or budget cap
+  │  - Falls back to free model when budget exceeded
   │  - Logs routing decision
   │  - Patches OpenClaw status bar
   │
   ▼
 LiteLLM (port 4000)
   │  - Resolves tier alias → actual model
-  │  - Handles retries and fallbacks
+  │  - Tracks per-key spend and enforces budget caps
   │
-  ▼
-Anthropic API (Haiku / Sonnet)
-  │  fallback ▼
-  Gemini 2.5 Flash (if Anthropic unreachable)
+  ├──► Anthropic API (Haiku / Sonnet)    ← normal path
+  │
+  └──► Gemini 2.5 Flash                  ← budget fallback path
 ```
 
 ---
@@ -107,6 +109,48 @@ If `retry_count` exceeds `max_retries` (default: 2), the request is routed to `t
 
 ---
 
+## Budget Fallback
+
+When a lane's daily spend limit is hit, LiteLLM returns an error instead of processing the request. ClawConductor catches this and automatically switches that lane to a free fallback model (Gemini 2.5 Flash) so the session keeps running without interruption.
+
+### How it works
+
+1. Request goes to LiteLLM on the normal lane key
+2. LiteLLM returns HTTP 400 with `budget_exceeded` in the error body
+3. ClawConductor marks that lane as in fallback mode
+4. A Telegram notification fires:
+   ```
+   💸 Budget cap hit: routing lane ($2.50/day)
+   Switching to cheaper model until midnight UTC.
+   Last model: claude-haiku-4-5 | ID: a3f8c2
+   ```
+5. The request is immediately retried with the fallback key and Gemini model — no response is dropped
+6. All subsequent requests on that lane go directly to Gemini (no wasted paid API calls)
+
+### Recovering
+
+The lane returns to the paid model when either:
+
+- **Budget is bumped manually** — use the `bump-budget` script:
+  ```bash
+  bump-budget routing 5.00     # set routing lane to $5.00
+  bump-budget escalation 5.00  # set escalation lane to $5.00
+  bump-budget all 5.00         # set both lanes
+  ```
+  This updates the LiteLLM key budget AND resets the ClawConductor fallback state. A recovery notification fires:
+  ```
+  ✅ Budget restored: routing lane
+  Switching back to standard model.
+  ```
+
+- **Daily reset at midnight** — the `litellm-reset-spend.timer` cron job resets spend to zero and calls `/admin/reset-fallback?lane=all` automatically.
+
+### Dedicated fallback key
+
+The fallback uses a separate LiteLLM virtual key (`CLAWCONDUCTOR_FALLBACK_KEY`) configured with only the Gemini model and no budget limit. This keeps fallback traffic isolated from the per-lane spend tracking.
+
+---
+
 ## Model Tiers
 
 | Tier | Model | Used For |
@@ -115,7 +159,7 @@ If `retry_count` exceeds `max_retries` (default: 2), the request is routed to `t
 | `tier/standard` | claude-sonnet-4-6 | Available, currently unused |
 | `tier/advanced` | claude-sonnet-4-6 | Escalation lane — complex tasks |
 
-All tiers fall back to `gemini-2.5-flash` automatically if Anthropic is unreachable.
+When a lane's daily budget is exhausted, ClawConductor switches that lane to `gemini-2.5-flash` automatically. See [Budget Fallback](#budget-fallback) for details.
 
 ---
 
@@ -183,15 +227,20 @@ router_settings:
 Create separate virtual keys for each lane so spend is tracked independently:
 
 ```bash
-# Routing lane key
+# Routing lane key (Haiku, with daily budget)
 curl -X POST http://localhost:4000/key/generate \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -d '{"key_alias":"clawconductor-routing","models":["tier/lightweight","tier/standard"],"max_budget":2.50,"budget_duration":"1d"}'
 
-# Escalation lane key
+# Escalation lane key (Sonnet, with daily budget)
 curl -X POST http://localhost:4000/key/generate \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -d '{"key_alias":"clawconductor-escalation","models":["tier/advanced"],"max_budget":2.50,"budget_duration":"1d"}'
+
+# Fallback key (Gemini only, no budget limit — used when paid lanes are exhausted)
+curl -X POST http://localhost:4000/key/generate \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -d '{"key_alias":"clawconductor-fallback","models":["gemini-2.5-flash"]}'
 ```
 
 ### 4. Set environment variables
@@ -201,8 +250,9 @@ Add the following to your env file (e.g. `~/.openclaw/.env`):
 ```bash
 CLAWCONDUCTOR_ROUTING_KEY=sk-your-routing-key
 CLAWCONDUCTOR_ESCALATION_KEY=sk-your-escalation-key
+CLAWCONDUCTOR_FALLBACK_KEY=sk-your-fallback-key
 
-# Optional — Telegram escalation notifications
+# Optional — Telegram notifications (escalation + budget alerts)
 CLAWCONDUCTOR_TELEGRAM_BOT_TOKEN=your-bot-token
 CLAWCONDUCTOR_TELEGRAM_CHAT_ID=your-chat-id
 ```
@@ -228,9 +278,16 @@ tier_display_models:
   standard: claude-sonnet-4-6
   advanced: claude-sonnet-4-6
 
+context_token_limit: 40000
+
+budget_fallback:
+  model: gemini-2.5-flash
+  display_name: Gemini 2.5 Flash
+
 litellm_keys:
   routing: os.environ/CLAWCONDUCTOR_ROUTING_KEY
   escalation: os.environ/CLAWCONDUCTOR_ESCALATION_KEY
+  fallback: os.environ/CLAWCONDUCTOR_FALLBACK_KEY
 ```
 
 ### 6. Install and start the systemd service
