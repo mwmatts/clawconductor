@@ -57,3 +57,17 @@ def test_different_task_ids_escalate_independently():
     ctx2["task_id"] = "t-2"
     d2 = route(ctx2, loop_guard=guard)
     assert d2.lane == "escalation"
+
+
+def test_max_retries_exceeded_routes_to_fallback():
+    """When retry_count exceeds max_retries, the decision lane must be 'fallback'."""
+    # retry_count=3 > max_retries=2 → fallback, no normal routing logic runs
+    decision = route(_base_ctx(retry_count=3, max_retries=2))
+    assert decision.lane == "fallback"
+    assert decision.reason == "max retries exceeded"
+
+
+def test_max_retries_at_limit_still_routes_normally():
+    """retry_count == max_retries is NOT exceeded — normal routing applies."""
+    decision = route(_base_ctx(retry_count=2, max_retries=2))
+    assert decision.lane in ("routing", "escalation")  # normal, not fallback
