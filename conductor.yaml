@@ -20,7 +20,16 @@ tier_display_models:
   standard: claude-sonnet-4-6
   advanced: claude-sonnet-4-6
 
+# Context window limit for threshold warnings (must match openclaw.json contextTokens)
+context_token_limit: 40000
+
+# Budget fallback: free model to use when a lane's daily budget is exceeded
+budget_fallback:
+  model: gemini-2.5-flash
+  display_name: Gemini 2.5 Flash
+
 # LiteLLM virtual keys per lane (set to your actual keys)
 litellm_keys:
   routing: os.environ/CLAWCONDUCTOR_ROUTING_KEY
   escalation: os.environ/CLAWCONDUCTOR_ESCALATION_KEY
+  fallback: os.environ/CLAWCONDUCTOR_FALLBACK_KEY
