@@ -10,9 +10,11 @@ Run with:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import subprocess
 from collections import defaultdict
 from typing import Any, AsyncIterator, Dict
 
@@ -33,6 +35,7 @@ app = FastAPI(title="ClawConductor Proxy")
 # --- Shared state (process lifetime) ---
 _loop_guard = LoopGuard()
 _failure_counts: Dict[str, int] = defaultdict(int)  # task_id -> consecutive failures
+_last_patched_model: str = ""  # cache to avoid redundant gateway calls
 
 # --- Config ---
 _config: dict = {}
@@ -55,6 +58,34 @@ def _startup() -> None:
 
 
 app.add_event_handler("startup", _startup)
+
+
+# --- Session model patching ---
+
+async def _patch_session_model(model_name: str) -> None:
+    """Fire-and-forget: update OpenClaw status bar via sessions.patch gateway call."""
+    global _last_patched_model
+    if model_name == _last_patched_model:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [
+                        "openclaw", "gateway", "call", "sessions.patch",
+                        "--params", f'{{"key":"agent:main:main","model":"litellm/{model_name}"}}',
+                    ],
+                    capture_output=True,
+                    timeout=2,
+                ),
+            ),
+            timeout=3,
+        )
+        _last_patched_model = model_name
+        logger.info("Patched session model to litellm/%s", model_name)
+    except Exception as e:
+        logger.warning("sessions.patch failed (non-fatal): %s", e)
 
 
 # --- Signal extraction ---
@@ -180,11 +211,12 @@ async def chat_completions(request: Request) -> Any:
                 )
                 _failure_counts[task_id] = 0  # reset on success
                 response_data = r.json()
-                # Rewrite model field to actual model name for status bar observability
+                # Rewrite model field and patch OpenClaw status bar
                 tier_display = _config.get("tier_display_models", {})
                 actual_model = tier_display.get(decision.tier)
                 if actual_model and isinstance(response_data, dict):
                     response_data["model"] = actual_model
+                    asyncio.create_task(_patch_session_model(actual_model))
                 return response_data
 
     except httpx.TimeoutException:
