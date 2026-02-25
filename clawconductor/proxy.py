@@ -228,7 +228,7 @@ async def chat_completions(request: Request) -> Any:
     upstream = f"{_upstream_url}/v1/chat/completions"
     forward_headers = {"Content-Type": "application/json"}
     # Use per-lane virtual key if configured; fall back to caller's key
-    lane_key = select_key(decision.lane, config_path="conductor.yaml")
+    lane_key = select_key(decision.lane, keys=_config.get("litellm_keys", {}))
     if lane_key:
         forward_headers["Authorization"] = f"Bearer {lane_key}"
     else:
