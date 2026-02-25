@@ -16,7 +16,7 @@ tiers:
 
 # Actual model names to surface in responses (for status bar observability)
 tier_display_models:
-  lightweight: claude-haiku-4-5-20251001
+  lightweight: claude-haiku-4-5
   standard: claude-sonnet-4-6
   advanced: claude-sonnet-4-6
 

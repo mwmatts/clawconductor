@@ -108,7 +108,7 @@ async def _patch_session_model(model_name: str) -> None:
                 None,
                 lambda: subprocess.run(
                     [
-                        "openclaw", "gateway", "call", "sessions.patch",
+                        "/home/matt/.npm-global/bin/openclaw", "gateway", "call", "sessions.patch",
                         "--params", f'{{"key":"agent:main:main","model":"litellm/{model_name}"}}',
                     ],
                     capture_output=True,
