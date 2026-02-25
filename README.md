@@ -1,5 +1,9 @@
 # ClawConductor
 
+<p align="center">
+  <img src="logo.svg" width="96" alt="ClawConductor">
+</p>
+
 ClawConductor is an intelligent model routing proxy that sits between [OpenClaw](https://github.com/anthropics/openclaw) and [LiteLLM](https://github.com/BerriAI/litellm). It automatically routes AI requests to the right model based on task complexity — using a fast, cheap model by default and escalating to a more capable model only when the task warrants it.
 
 ---
