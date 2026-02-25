@@ -75,7 +75,12 @@ def _task_class_from_messages(messages: list) -> str | None:
     last_content = ""
     for msg in reversed(messages):
         if msg.get("role") == "user":
-            last_content = (msg.get("content") or "").lower()
+            content = msg.get("content") or ""
+            if isinstance(content, list):
+                content = " ".join(
+                    part.get("text", "") for part in content if isinstance(part, dict)
+                )
+            last_content = content.lower()
             break
     if not last_content:
         return None
