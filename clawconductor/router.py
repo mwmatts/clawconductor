@@ -6,6 +6,7 @@ routing lane or gets escalated to a stronger model lane.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Set
 
@@ -18,6 +19,7 @@ from .loop_guard import LoopGuard
 @dataclass
 class RoutingDecision:
     task_id: str
+    trace_id: str
     triggered_groups: Set[str]
     lane: str  # "routing" or "escalation"
     tier: str
@@ -49,7 +51,8 @@ def route(
     Parameters
     ----------
     ctx:
-        Task context dict.  Must contain ``task_id``.
+        Task context dict.  Must contain ``task_id``.  Optional ``trace_id``
+        (UUID string) will be used if provided; otherwise a fresh UUID is generated.
     config:
         Parsed conductor.yaml (or override dict).  Falls back to defaults.
     loop_guard:
@@ -57,6 +60,7 @@ def route(
     """
     cfg = {**_DEFAULT_CONFIG, **(config or {})}
     task_id: str = ctx["task_id"]
+    trace_id: str = ctx.get("trace_id") or str(uuid.uuid4())
     groups = classify(ctx)
 
     escalate = bool(groups)
@@ -80,10 +84,16 @@ def route(
         else:
             reason = "no triggers fired"
 
-    return RoutingDecision(
+    decision = RoutingDecision(
         task_id=task_id,
+        trace_id=trace_id,
         triggered_groups=groups,
         lane=lane,
         tier=lane_cfg["tier"],
         reason=reason,
     )
+
+    from .logger import log_decision  # lazy import to avoid circular dependency
+    log_decision(decision)
+
+    return decision
