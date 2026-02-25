@@ -13,6 +13,7 @@ GROUP_A_FLAGS: set[str] = {
     "plan",
     "design",
     "architecture",
+    "debug",
     "debugging",
     "strategy",
     "synthesis",
