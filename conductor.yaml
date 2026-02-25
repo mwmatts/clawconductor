@@ -3,7 +3,7 @@
 upstream_url: http://localhost:4000
 
 routing_lane:
-  tier: standard
+  tier: lightweight
 
 escalation_lane:
   tier: advanced
