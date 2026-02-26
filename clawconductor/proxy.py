@@ -18,6 +18,8 @@ import os
 import subprocess
 import time
 from collections import defaultdict
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict
 
 import httpx
@@ -25,6 +27,7 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from . import events, metrics as metrics_mod
 from .classifier import GROUP_A_FLAGS
 from .key_selector import select_key
 from .loop_guard import LoopGuard
@@ -32,8 +35,6 @@ from .router import route
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("clawconductor.proxy")
-
-app = FastAPI(title="ClawConductor Proxy")
 
 # --- Shared state (process lifetime) ---
 _loop_guard = LoopGuard()
@@ -43,8 +44,12 @@ _context_tokens: int = 0  # latest prompt_tokens from last response (best estima
 _last_escalation_at: float = 0.0  # timestamp of last escalation notification sent
 _budget_fallback_active: Dict[str, bool] = {}  # lane -> currently using budget fallback
 _budget_notified: Dict[str, bool] = {}  # lane -> notification sent this budget period
+_budget_fallback_since: Dict[str, str] = {}  # lane -> ISO timestamp when fallback started
+_watchdog_alerted: set[tuple[str, str]] = set()  # (lane, started_ts) already alerted
 
 _ESCALATION_COOLDOWN = 60  # seconds between escalation notifications
+_FALLBACK_STUCK_THRESHOLD = 1800  # 30 minutes
+_HEARTBEAT_INTERVAL = 1800  # 30 minutes
 
 # --- Config ---
 _config: dict = {}
@@ -64,22 +69,50 @@ def _startup() -> None:
     _config = _load_config()
     _upstream_url = _config.get("upstream_url", "http://localhost:4000").rstrip("/")
     logger.info("ClawConductor proxy started. Upstream: %s", _upstream_url)
+    events.init()
+    events.record("startup", reason=f"ClawConductor started. Upstream: {_upstream_url}")
 
 
-app.add_event_handler("startup", _startup)
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _startup()
+    watchdog_task = asyncio.create_task(_fallback_watchdog())
+    try:
+        yield
+    finally:
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
 
 
-# --- Telegram escalation notification ---
+app = FastAPI(title="ClawConductor Proxy", lifespan=_lifespan)
+
+
+# --- Telegram notifications ---
 
 _TELEGRAM_BOT_TOKEN = os.environ.get("CLAWCONDUCTOR_TELEGRAM_BOT_TOKEN", "")
 _TELEGRAM_CHAT_ID = os.environ.get("CLAWCONDUCTOR_TELEGRAM_CHAT_ID", "")
 _LITELLM_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 
 
-async def _notify_escalation(actual_model: str, triggered_groups: set, reason: str, task_class: str = "") -> None:
-    """Fire-and-forget: send a Telegram message when a request is escalated."""
+async def _send_telegram(text: str) -> None:
     if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
         return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage",
+                data={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+                timeout=3,
+            )
+    except Exception as e:
+        logger.warning("Telegram send failed (non-fatal): %s", e)
+
+
+async def _notify_escalation(actual_model: str, triggered_groups: set, reason: str, task_class: str = "") -> None:
+    """Fire-and-forget: send a Telegram message when a request is escalated."""
     group_descriptions = {
         "A": f'Keyword "{task_class}" detected' if task_class else "Task keyword detected",
         "B": "Consecutive tool failures",
@@ -89,16 +122,7 @@ async def _notify_escalation(actual_model: str, triggered_groups: set, reason: s
     }
     primary_group = sorted(triggered_groups)[0] if triggered_groups else "A"
     description = group_descriptions.get(primary_group, "Escalation triggered")
-    text = f"⚡ {description} — switching to smarter model"
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage",
-                data={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
-                timeout=3,
-            )
-    except Exception as e:
-        logger.warning("Telegram escalation notify failed (non-fatal): %s", e)
+    await _send_telegram(f"⚡ {description} — switching to smarter model")
 
 
 # --- Budget fallback helpers ---
@@ -110,6 +134,8 @@ def _is_budget_error(status_code: int, error_text: str) -> bool:
 
 def _mark_budget_fallback(lane: str) -> bool:
     """Mark lane as in fallback. Returns True if notification should be sent."""
+    if not _budget_fallback_active.get(lane):
+        _budget_fallback_since[lane] = datetime.now(timezone.utc).isoformat()
     _budget_fallback_active[lane] = True
     if _budget_notified.get(lane):
         return False
@@ -122,6 +148,7 @@ def _clear_budget_fallback(lane: str) -> bool:
     was_active = _budget_fallback_active.get(lane, False)
     _budget_fallback_active[lane] = False
     _budget_notified[lane] = False
+    _budget_fallback_since.pop(lane, None)
     return was_active
 
 
@@ -150,40 +177,52 @@ async def _fetch_lane_budget(lane: str) -> str:
 
 async def _notify_budget_cap(lane: str, actual_model: str, task_id: str) -> None:
     """Fire-and-forget: notify user that a lane's daily budget cap was hit."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
     lane_budget = await _fetch_lane_budget(lane)
     budget_str = f" ({lane_budget})" if lane_budget else ""
-    text = (
+    await _send_telegram(
         f"💸 Budget cap hit: {lane} lane{budget_str}\n"
         f"Switching to cheaper model until midnight UTC.\n"
         f"Last model: {actual_model} | ID: {task_id[:6]}"
     )
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage",
-                data={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
-                timeout=3,
-            )
-    except Exception as e:
-        logger.warning("Telegram budget cap notify failed (non-fatal): %s", e)
 
 
 async def _notify_budget_restored(lane: str) -> None:
     """Fire-and-forget: notify user that the paid model is back after budget reset."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"✅ Budget restored: {lane} lane\nSwitching back to standard model."
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage",
-                data={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
-                timeout=3,
-            )
-    except Exception as e:
-        logger.warning("Telegram budget restored notify failed (non-fatal): %s", e)
+    await _send_telegram(f"✅ Budget restored: {lane} lane\nSwitching back to standard model.")
+
+
+# --- Fallback-stuck watchdog ---
+
+async def _fallback_watchdog() -> None:
+    """Check every 5 min whether any lane has been in fallback too long."""
+    while True:
+        await asyncio.sleep(300)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        now_ts = time.monotonic()
+        for lane, since_iso in list(_budget_fallback_since.items()):
+            if not _budget_fallback_active.get(lane):
+                continue
+            try:
+                since_dt = datetime.fromisoformat(since_iso)
+                elapsed = (datetime.now(timezone.utc) - since_dt).total_seconds()
+            except Exception:
+                continue
+            alert_key = (lane, since_iso)
+            if elapsed >= _FALLBACK_STUCK_THRESHOLD and alert_key not in _watchdog_alerted:
+                _watchdog_alerted.add(alert_key)
+                minutes = int(elapsed // 60)
+                logger.warning("Fallback stuck: %s lane has been in Gemini fallback for %d min", lane, minutes)
+                events.record(
+                    "fallback_stuck",
+                    lane=lane,
+                    model=_config.get("budget_fallback", {}).get("display_name", "gemini-2.5-flash"),
+                    reason=f"Lane stuck in fallback for {minutes} min",
+                )
+                asyncio.create_task(_send_telegram(
+                    f"⚠️ *Fallback stuck*: {lane} lane has been on Gemini for {minutes} min.\n"
+                    f"Started: {since_iso[:16]} UTC\n"
+                    f"Run: `curl -X POST http://localhost:8765/admin/reset-fallback?lane={lane}`"
+                ))
 
 
 # --- Session model patching ---
@@ -219,11 +258,7 @@ async def _patch_session_model(model_name: str) -> None:
 def _inject_routing_metadata(
     messages: list, model_name: str, tier: str, context_tokens: int, limit: int
 ) -> list:
-    """Prepend a one-line routing metadata block to the system message.
-
-    This gives the agent accurate current-turn model/context info so it can
-    self-report correctly on Telegram (where there is no TUI status bar).
-    """
+    """Prepend a one-line routing metadata block to the system message."""
     pct = int(context_tokens / limit * 100) if limit else 0
     meta = (
         f"[ClawConductor routing metadata — authoritative for this request: "
@@ -231,13 +266,12 @@ def _inject_routing_metadata(
         f"context={context_tokens // 1000}k/{limit // 1000}k ({pct}%). "
         f"Disregard any other model references in this context when self-reporting.]"
     )
-    messages = list(messages)  # shallow copy — don't mutate caller's list
+    messages = list(messages)
     for i, msg in enumerate(messages):
         if isinstance(msg, dict) and msg.get("role") == "system":
             existing = msg.get("content") or ""
             messages[i] = {**msg, "content": f"{meta}\n{existing}"}
             return messages
-    # No system message present — prepend one
     return [{"role": "system", "content": meta}] + messages
 
 
@@ -298,10 +332,18 @@ def _task_class_from_messages(messages: list) -> str | None:
 def _build_ctx(body: dict, task_id: str) -> dict:
     messages = body.get("messages", [])
     task_class = _task_class_from_messages(messages)
+
+    xcc = body.get("x_clawconductor") or {}
+    signals = xcc.get("signals", []) if isinstance(xcc, dict) else []
+    validation_failed = xcc.get("validation_failed", False) if isinstance(xcc, dict) else False
+    retry_count = xcc.get("retry_count", 0) if isinstance(xcc, dict) else 0
+    xcc_task_id = xcc.get("task_id") if isinstance(xcc, dict) else None
+
     return {
-        "task_id": task_id,
-        "signals": [],
-        "retry_count": 0,
+        "task_id": xcc_task_id or task_id,
+        "signals": signals if isinstance(signals, list) else [],
+        "validation_failed": bool(validation_failed),
+        "retry_count": int(retry_count),
         "max_retries": 2,
         "consecutive_tool_failures": _failure_counts[task_id],
         **({"task_class": task_class} if task_class else {}),
@@ -319,7 +361,7 @@ async def _stream_response(
     global _context_tokens
     client = httpx.AsyncClient()
     tail_buffer = b""
-    MAX_TAIL = 4096  # enough to capture the final usage SSE chunk
+    MAX_TAIL = 4096
     try:
         async with client.stream("POST", url, headers=headers, json=body, timeout=120) as r:
             if r.status_code >= 400:
@@ -334,7 +376,6 @@ async def _stream_response(
     finally:
         await client.aclose()
 
-    # Parse usage from the tail of the stream (sent by LiteLLM in final chunks)
     try:
         for line in tail_buffer.decode("utf-8", errors="ignore").splitlines():
             line = line.strip()
@@ -348,9 +389,6 @@ async def _stream_response(
     except Exception:
         pass
 
-    # Append a warning SSE chunk if at threshold (before [DONE] has already been sent,
-    # so this appends after — clients that have already consumed [DONE] will ignore it,
-    # but OpenClaw reads it as additional streamed content)
     if context_limit:
         warning = _context_warning(_context_tokens, context_limit)
         if warning:
@@ -372,12 +410,9 @@ async def chat_completions(request: Request) -> Any:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     task_id = _task_id_from_request(body)
-
     ctx = _build_ctx(body, task_id)
-
     decision = route(ctx, config=_config, loop_guard=_loop_guard)
 
-    # Resolve tier alias — use LiteLLM virtual model name
     tier_aliases = {
         "lightweight": "tier/lightweight",
         "standard": "tier/standard",
@@ -391,11 +426,37 @@ async def chat_completions(request: Request) -> Any:
         sorted(decision.triggered_groups),
     )
 
-    # Resolve display model name (used for metadata injection, status bar, and notifications)
     tier_display = _config.get("tier_display_models", {})
     actual_model = tier_display.get(decision.tier, decision.tier)
 
-    # Notify on escalation (fire-and-forget, debounced to avoid burst duplicates)
+    # --- Metrics + event recording ---
+    if decision.lane == "escalation":
+        metrics_mod.metrics.record_escalation(decision.triggered_groups)
+        events.record(
+            "escalation",
+            lane=decision.lane,
+            tier=decision.tier,
+            model=actual_model,
+            groups=decision.triggered_groups,
+            reason=decision.reason,
+            task_id=task_id,
+            trace_id=decision.trace_id,
+        )
+    else:
+        metrics_mod.metrics.record_routing()
+
+    # Heartbeat: record current model/lane every 30 min
+    if metrics_mod.metrics.needs_heartbeat(_HEARTBEAT_INTERVAL):
+        metrics_mod.metrics.mark_heartbeat()
+        events.record(
+            "heartbeat",
+            lane=decision.lane,
+            tier=decision.tier,
+            model=actual_model,
+            reason="periodic heartbeat",
+        )
+
+    # Notify on escalation (debounced)
     if decision.lane == "escalation":
         global _last_escalation_at
         now = time.monotonic()
@@ -405,11 +466,9 @@ async def chat_completions(request: Request) -> Any:
                 _notify_escalation(actual_model, decision.triggered_groups, decision.reason, task_class=ctx.get("task_class", ""))
             )
 
-    # Rewrite model field
     forwarded_body = {**body, "model": model_alias}
     context_limit = _config.get("context_token_limit", 40000)
 
-    # Inject routing metadata into system message so the agent knows its current state
     injected_messages = _inject_routing_metadata(
         forwarded_body.get("messages", []),
         model_name=actual_model,
@@ -419,15 +478,12 @@ async def chat_completions(request: Request) -> Any:
     )
     forwarded_body = {**forwarded_body, "messages": injected_messages}
 
-    # For streaming: request LiteLLM to include usage in the final chunk
     stream = forwarded_body.get("stream", False)
     if stream:
         forwarded_body = {**forwarded_body, "stream_options": {"include_usage": True}}
 
-    # Forward to LiteLLM
     upstream = f"{_upstream_url}/v1/chat/completions"
     forward_headers = {"Content-Type": "application/json"}
-    # Use per-lane virtual key if configured; fall back to caller's key
     lane_key = select_key(decision.lane, keys=_config.get("litellm_keys", {}))
     if lane_key:
         forward_headers["Authorization"] = f"Bearer {lane_key}"
@@ -436,7 +492,6 @@ async def chat_completions(request: Request) -> Any:
         if auth:
             forward_headers["Authorization"] = auth
 
-    # Fallback config — dedicated key with gemini-only, no budget limit
     fb_model = _config.get("budget_fallback", {}).get("model", "gemini-2.5-flash")
     fb_key = select_key("fallback", keys=_config.get("litellm_keys", {}))
     fb_headers = {"Content-Type": "application/json"}
@@ -445,7 +500,6 @@ async def chat_completions(request: Request) -> Any:
 
     try:
         if _budget_fallback_active.get(decision.lane, False):
-            # Lane is in budget fallback — go direct to free model, no paid call
             logger.info("Lane %s in budget fallback — routing direct to %s", decision.lane, fb_model)
             fb_body = {**forwarded_body, "model": fb_model}
             if stream:
@@ -466,6 +520,13 @@ async def chat_completions(request: Request) -> Any:
                     if _is_budget_error(e.response.status_code, str(e)):
                         if _mark_budget_fallback(decision.lane):
                             asyncio.create_task(_notify_budget_cap(decision.lane, actual_model, task_id))
+                            events.record(
+                                "budget_fallback",
+                                lane=decision.lane,
+                                model=fb_model,
+                                reason=f"Budget 429 on {decision.lane} lane — streaming fallback",
+                                task_id=task_id,
+                            )
                         logger.info("Budget 429 on %s lane — streaming via fallback %s", decision.lane, fb_model)
                         fb_body = {**forwarded_body, "model": fb_model}
                         async for chunk in _stream_response(upstream, fb_headers, fb_body, context_limit):
@@ -485,6 +546,13 @@ async def chat_completions(request: Request) -> Any:
                 if _is_budget_error(r.status_code, r.text):
                     if _mark_budget_fallback(decision.lane):
                         asyncio.create_task(_notify_budget_cap(decision.lane, actual_model, task_id))
+                        events.record(
+                            "budget_fallback",
+                            lane=decision.lane,
+                            model=fb_model,
+                            reason=f"Budget 429 on {decision.lane} lane — non-streaming retry",
+                            task_id=task_id,
+                        )
                     logger.info("Budget 429 on %s lane — retrying with fallback %s", decision.lane, fb_model)
                     fb_body = {**forwarded_body, "model": fb_model}
                     r = await client.post(upstream, headers=fb_headers, json=fb_body, timeout=120)
@@ -493,20 +561,17 @@ async def chat_completions(request: Request) -> Any:
             if r.status_code >= 400:
                 _failure_counts[task_id] += 1
                 raise HTTPException(status_code=r.status_code, detail=r.text)
-            _failure_counts[task_id] = 0  # reset on success
+            _failure_counts[task_id] = 0
             response_data = r.json()
 
-            # Update token count from usage
             usage = response_data.get("usage", {}) if isinstance(response_data, dict) else {}
             if usage and "prompt_tokens" in usage:
                 _context_tokens = usage["prompt_tokens"]
 
             if actual_model and isinstance(response_data, dict):
-                # Rewrite model field and patch OpenClaw status bar
                 response_data["model"] = actual_model
                 asyncio.create_task(_patch_session_model(actual_model))
 
-                # Append context warning if near threshold
                 warning = _context_warning(_context_tokens, context_limit)
                 if warning:
                     choices = response_data.get("choices", [])
@@ -523,6 +588,10 @@ async def chat_completions(request: Request) -> Any:
         raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Admin endpoints
+# ---------------------------------------------------------------------------
+
 @app.post("/admin/reset-fallback")
 async def reset_fallback(lane: str = "all") -> dict:
     """Reset budget fallback state for a lane. Called by cron or manual bump script."""
@@ -535,9 +604,149 @@ async def reset_fallback(lane: str = "all") -> dict:
         if _budget_fallback_active.get(l):
             _clear_budget_fallback(l)
             asyncio.create_task(_notify_budget_restored(l))
+            events.record("budget_restored", lane=l, reason="Budget reset via admin endpoint")
             reset.append(l)
     logger.info("Fallback reset for lanes: %s", reset or "none active")
     return {"status": "ok", "reset": reset}
+
+
+@app.get("/admin/status")
+async def admin_status() -> dict:
+    """Live health snapshot: current model per lane, fallback state, today's counts."""
+    snap = metrics_mod.metrics.snapshot()
+    tier_display = _config.get("tier_display_models", {})
+    fb_display = _config.get("budget_fallback", {}).get("display_name", "gemini-2.5-flash")
+
+    routing_fb = _budget_fallback_active.get("routing", False)
+    escalation_fb = _budget_fallback_active.get("escalation", False)
+
+    if routing_fb and escalation_fb:
+        health = "degraded_all_fallback"
+    elif routing_fb:
+        health = "degraded_routing_fallback"
+    elif escalation_fb:
+        health = "degraded_escalation_fallback"
+    else:
+        health = "nominal"
+
+    def _lane_info(lane: str, normal_tier: str, in_fallback: bool) -> dict:
+        normal_model = tier_display.get(normal_tier, normal_tier)
+        return {
+            "active_model": fb_display if in_fallback else normal_model,
+            "in_fallback": in_fallback,
+            "fallback_since": _budget_fallback_since.get(lane) if in_fallback else None,
+            "requests_today": snap["routing_requests"] if lane == "routing" else snap["escalation_requests"],
+            "last_request_at": snap["last_request_at"].get(lane),
+        }
+
+    routing_tier = _config.get("routing_lane", {}).get("tier", "lightweight")
+    escalation_tier = _config.get("escalation_lane", {}).get("tier", "advanced")
+
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "health": health,
+        "lanes": {
+            "routing": _lane_info("routing", routing_tier, routing_fb),
+            "escalation": _lane_info("escalation", escalation_tier, escalation_fb),
+        },
+        "escalations_today": snap["escalation_triggers"],
+        "context_tokens_last": _context_tokens,
+    }
+
+
+@app.get("/admin/history")
+async def admin_history(
+    days: int = 1,
+    event_type: str | None = None,
+    lane: str | None = None,
+    format: str = "json",
+) -> Any:
+    """Query persistent event history.
+
+    format: "json" (default) | "table" | "csv"
+    """
+    rows = events.query(days=days, event_type=event_type, lane=lane)
+    if format == "table":
+        return {"table": events.format_table(rows), "count": len(rows)}
+    if format == "csv":
+        return StreamingResponse(
+            iter([events.to_csv(rows)]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=clawconductor-events-{days}d.csv"},
+        )
+    return {"events": rows, "count": len(rows)}
+
+
+@app.get("/admin/export")
+async def admin_export(days: int = 7) -> StreamingResponse:
+    """Download event history as CSV."""
+    rows = events.query(days=days, limit=10000)
+    return StreamingResponse(
+        iter([events.to_csv(rows)]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=clawconductor-events-{days}d.csv"},
+    )
+
+
+@app.get("/admin/daily-report")
+async def admin_daily_report(date: str | None = None) -> dict:
+    """Return a plain-text daily summary (Telegram-ready)."""
+    summary = events.daily_summary(date)
+    day = summary.get("date", "unknown")
+    counts = summary.get("counts", {})
+    triggers = summary.get("escalation_triggers", {})
+    fallback_rows = summary.get("fallback_rows", [])
+
+    lines = [f"ClawConductor Report — {day}", ""]
+
+    # Request counts (from persistent DB — survives restarts)
+    escalations = counts.get("escalation", 0)
+    fallbacks = counts.get("budget_fallback", 0)
+    restores = counts.get("budget_restored", 0)
+    lines.append(f"Escalations: {escalations}")
+    lines.append(f"Fallback events: {fallbacks}  |  Restores: {restores}")
+
+    if triggers:
+        parts = "  ".join(f"Group {k}×{v}" for k, v in sorted(triggers.items()))
+        lines.append(f"Escalation triggers: {parts}")
+    else:
+        lines.append("Escalation triggers: none")
+
+    lines.append("")
+
+    # Fallback timeline
+    if fallback_rows:
+        lines.append("Fallback timeline:")
+        for row in fallback_rows:
+            ts = row.get("ts", "")[:16]
+            t = row.get("type", "")
+            lane = row.get("lane", "")
+            icon = "⚠️" if "fallback" in t else "✅"
+            lines.append(f"  {icon} {ts}  {lane}  {t}")
+    else:
+        lines.append("Fallback events: none ✓")
+
+    # Current status
+    lines.append("")
+    routing_fb = _budget_fallback_active.get("routing", False)
+    escalation_fb = _budget_fallback_active.get("escalation", False)
+    if routing_fb or escalation_fb:
+        active = [l for l, v in [("routing", routing_fb), ("escalation", escalation_fb)] if v]
+        lines.append(f"⚠️ Currently in fallback: {', '.join(active)}")
+    else:
+        lines.append("Status now: nominal ✓")
+
+    return {"report": "\n".join(lines), "date": day}
+
+
+@app.post("/admin/reset-metrics")
+async def admin_reset_metrics() -> dict:
+    """Reset in-memory daily counters (called by midnight cron after daily report is sent)."""
+    metrics_mod.metrics.reset()
+    events.reset_today()
+    new_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    logger.info("Metrics reset for new day: %s", new_date)
+    return {"status": "ok", "new_date": new_date}
 
 
 @app.get("/health")
