@@ -23,6 +23,11 @@ tier_display_models:
 # Context window limit for threshold warnings (must match openclaw.json contextTokens)
 context_token_limit: 40000
 
+# Cooldown (seconds) after a Group A escalation before the same keyword can
+# trigger another Group-A-only escalation. Prevents carry-over false positives
+# from follow-up messages that reference the original task. Set to 0 to disable.
+group_a_cooldown_seconds: 300
+
 # Budget fallback: free model to use when a lane's daily budget is exceeded
 budget_fallback:
   model: gemini-2.5-flash

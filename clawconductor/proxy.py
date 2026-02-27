@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from collections import defaultdict
@@ -30,7 +31,7 @@ from fastapi.responses import StreamingResponse
 from . import events, metrics as metrics_mod
 from .classifier import GROUP_A_FLAGS, configure as _configure_classifier
 from .key_selector import select_key
-from .loop_guard import LoopGuard
+from .loop_guard import EscalationCooldown, LoopGuard
 from .logger import log_decision as _log_decision
 from .router import route, RoutingDecision
 
@@ -39,6 +40,7 @@ logger = logging.getLogger("clawconductor.proxy")
 
 # --- Shared state (process lifetime) ---
 _loop_guard = LoopGuard()
+_escalation_cooldown: EscalationCooldown = EscalationCooldown()  # reconfigured at startup
 _failure_counts: Dict[str, int] = defaultdict(int)  # task_id -> consecutive failures
 _last_patched_model: str = ""  # cache to avoid redundant gateway calls
 _context_tokens: int = 0  # latest prompt_tokens from last response (best estimate)
@@ -66,10 +68,13 @@ def _load_config(path: str = "conductor.yaml") -> dict:
 
 
 def _startup() -> None:
-    global _config, _upstream_url
+    global _config, _upstream_url, _escalation_cooldown
     _config = _load_config()
     _upstream_url = _config.get("upstream_url", "http://localhost:4000").rstrip("/")
     _configure_classifier(_config)
+    _recompile_keyword_patterns()
+    cooldown_secs = _config.get("group_a_cooldown_seconds", 300)
+    _escalation_cooldown = EscalationCooldown(cooldown_seconds=cooldown_secs)
     logger.info("ClawConductor proxy started. Upstream: %s", _upstream_url)
     events.init()
     events.record("startup", reason=f"ClawConductor started. Upstream: {_upstream_url}")
@@ -299,6 +304,42 @@ def _context_warning(context_tokens: int, limit: int) -> str | None:
 
 # --- Signal extraction ---
 
+# Approach 2: word-boundary regex patterns compiled from GROUP_A_FLAGS.
+# Populated at import time from defaults and rebuilt after _configure_classifier()
+# in _startup() to pick up any conductor.yaml overrides.
+_keyword_patterns: dict[str, re.Pattern] = {}
+
+# Approach 3: words that indicate a keyword is being referenced rather than requested.
+# "that research was helpful" / "the debug output" / "was done reviewing" etc.
+_BACKREF_WORDS: frozenset[str] = frozenset({
+    "that", "the", "this", "your", "its", "my", "our",
+    "was", "were", "did", "has", "have", "had",
+    "finished", "completed", "done", "after",
+})
+
+
+def _is_referential(text: str, match: re.Match) -> bool:
+    """Return True if the keyword match looks referential rather than a task request.
+
+    Checks the 1-2 words immediately before the matched keyword. If any of
+    them are back-reference / past-tense markers, the keyword is likely
+    describing something already done rather than requesting a new task.
+    """
+    preceding = text[:match.start()].split()
+    recent = {w.strip(".,;:") for w in preceding[-2:]}
+    return bool(recent & _BACKREF_WORDS)
+
+
+def _recompile_keyword_patterns() -> None:
+    """Rebuild word-boundary regex patterns from the current GROUP_A_FLAGS set."""
+    _keyword_patterns.clear()
+    for kw in GROUP_A_FLAGS:
+        _keyword_patterns[kw] = re.compile(r"\b" + re.escape(kw) + r"\b")
+
+
+_recompile_keyword_patterns()  # initialise from defaults at import time
+
+
 def _task_id_from_request(body: dict) -> str:
     """Stable hash of last message content + model field."""
     last_msg = ""
@@ -310,7 +351,13 @@ def _task_id_from_request(body: dict) -> str:
 
 
 def _task_class_from_messages(messages: list) -> str | None:
-    """Scan last user message for Group A keywords."""
+    """Scan last user message for Group A keywords.
+
+    Uses word-boundary regex (approach 2) to avoid substring false positives
+    (e.g. "plan" inside "explanation"), then applies a referential-use filter
+    (approach 3) to suppress keywords that are describing something already
+    done rather than requesting a new task (e.g. "that research was helpful").
+    """
     if not messages:
         return None
     last_content = ""
@@ -325,8 +372,9 @@ def _task_class_from_messages(messages: list) -> str | None:
             break
     if not last_content:
         return None
-    for keyword in GROUP_A_FLAGS:
-        if keyword in last_content:
+    for keyword, pattern in _keyword_patterns.items():
+        m = pattern.search(last_content)
+        if m and not _is_referential(last_content, m):
             return keyword
     return None
 
@@ -429,6 +477,28 @@ async def chat_completions(request: Request) -> Any:
     task_id = _task_id_from_request(body)
     ctx = _build_ctx(body, task_id)
     decision = route(ctx, config=_config, loop_guard=_loop_guard)
+
+    # Approach 1: suppress Group-A-only escalations within the cooldown window.
+    # This prevents carry-over false positives where the user's follow-up message
+    # incidentally contains the same keyword that triggered the original escalation.
+    if (
+        decision.lane == "escalation"
+        and decision.triggered_groups == {"A"}
+        and ctx.get("task_class")
+        and _escalation_cooldown.should_suppress(ctx["task_class"])
+    ):
+        routing_tier = _config.get("routing_lane", {}).get("tier", "lightweight")
+        decision = RoutingDecision(
+            task_id=decision.task_id,
+            trace_id=decision.trace_id,
+            triggered_groups=decision.triggered_groups,
+            lane="routing",
+            tier=routing_tier,
+            reason=f"Group A suppressed: keyword '{ctx['task_class']}' within cooldown",
+        )
+        logger.info("Cooldown suppressed Group A escalation for keyword '%s'", ctx["task_class"])
+    elif decision.lane == "escalation" and "A" in decision.triggered_groups and ctx.get("task_class"):
+        _escalation_cooldown.record(ctx["task_class"])
 
     tier_aliases = {
         "lightweight": "tier/lightweight",
