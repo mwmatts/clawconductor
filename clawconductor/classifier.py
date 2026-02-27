@@ -60,15 +60,22 @@ _DEFAULT_TRIGGER_PHRASES: tuple[str, ...] = (
 # Empty by default; phrase matching is disabled until explicitly configured.
 TRIGGER_PHRASES: list[str] = []
 
+# Group B failure threshold — updated by configure() from escalation.group_b_failure_threshold.
+_GROUP_B_THRESHOLD: int = 2
+
 
 def configure(config: dict) -> None:
-    """Update GROUP_A_FLAGS and TRIGGER_PHRASES from config.
+    """Update GROUP_A_FLAGS, TRIGGER_PHRASES, and _GROUP_B_THRESHOLD from config.
 
     trigger_words: supports one-word-per-item and comma-separated formats.
       Falls back to _DEFAULT_TRIGGER_WORDS if absent or empty.
     trigger_phrases: each item is a phrase for substring match against the
       full user message (case-insensitive). Empty by default — opt-in only.
+    escalation.group_b_failure_threshold: consecutive tool failures before
+      Group B fires. Defaults to 2 if absent.
     """
+    global _GROUP_B_THRESHOLD
+
     raw = config.get("trigger_words")
     words: set[str] = set()
     if raw and isinstance(raw, list):
@@ -90,6 +97,10 @@ def configure(config: dict) -> None:
     TRIGGER_PHRASES.clear()
     TRIGGER_PHRASES.extend(phrases)
 
+    escalation_cfg = config.get("escalation", {})
+    threshold = escalation_cfg.get("group_b_failure_threshold", 2) if isinstance(escalation_cfg, dict) else 2
+    _GROUP_B_THRESHOLD = int(threshold)
+
 
 def check_group_a(ctx: Dict[str, Any]) -> bool:
     """Task-class keyword or trigger phrase present in the user message."""
@@ -104,8 +115,8 @@ def check_group_a(ctx: Dict[str, Any]) -> bool:
 
 
 def check_group_b(ctx: Dict[str, Any]) -> bool:
-    """Consecutive tool failures >= 2."""
-    return ctx.get("consecutive_tool_failures", 0) >= 2
+    """Consecutive tool failures >= group_b_failure_threshold."""
+    return ctx.get("consecutive_tool_failures", 0) >= _GROUP_B_THRESHOLD
 
 
 def check_group_c(ctx: Dict[str, Any]) -> bool:

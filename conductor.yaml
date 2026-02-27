@@ -40,6 +40,13 @@ litellm_keys:
 # Each item is matched as a case-insensitive substring of the user message.
 trigger_phrases: []
 
+# Escalation thresholds — both values default to 2 if this block is absent.
+escalation:
+  # Consecutive tool failures before Group B fires.
+  group_b_failure_threshold: 2
+  # Number of retries before Group D (validation failed on retry) fires.
+  max_retries: 2
+
 # Group A escalation trigger words — edit this list to match your agent's vocabulary.
 # Each item may be a single word or a comma-separated string of words.
 trigger_words:

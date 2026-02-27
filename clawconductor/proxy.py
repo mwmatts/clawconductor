@@ -360,7 +360,7 @@ def _build_ctx(body: dict, task_id: str) -> dict:
         "signals": signals if isinstance(signals, list) else [],
         "validation_failed": bool(validation_failed),
         "retry_count": int(retry_count),
-        "max_retries": 2,
+        "max_retries": int(_config.get("escalation", {}).get("max_retries", 2)),
         "consecutive_tool_failures": _failure_counts[task_id],
         "message_text": message_text,
         **({"task_class": task_class} if task_class else {}),
