@@ -82,8 +82,6 @@ def route(
             tier=lane_cfg["tier"],
             reason="max retries exceeded",
         )
-        from .logger import log_decision  # lazy import to avoid circular dependency
-        log_decision(decision)
         return decision
 
     groups = classify(ctx)
@@ -117,8 +115,5 @@ def route(
         tier=lane_cfg["tier"],
         reason=reason,
     )
-
-    from .logger import log_decision  # lazy import to avoid circular dependency
-    log_decision(decision)
 
     return decision

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Set
 
-# Group A — explicit task-class flags
-GROUP_A_FLAGS: set[str] = {
+# Default trigger words used when conductor.yaml has no trigger_words field.
+_DEFAULT_TRIGGER_WORDS: frozenset[str] = frozenset({
     "plan",
     "design",
     "architecture",
@@ -28,7 +28,30 @@ GROUP_A_FLAGS: set[str] = {
     "analyze",
     "compare",
     "recommend",
-}
+})
+
+# Active trigger word set — populated from conductor.yaml at startup via configure().
+# Starts equal to the defaults so the classifier works without any config call.
+GROUP_A_FLAGS: set[str] = set(_DEFAULT_TRIGGER_WORDS)
+
+
+def configure(config: dict) -> None:
+    """Update GROUP_A_FLAGS from the trigger_words list in config.
+
+    Supports both one-word-per-item and comma-separated-per-item formats,
+    matching the template examples in the README.  Falls back to
+    _DEFAULT_TRIGGER_WORDS if trigger_words is absent or empty.
+    """
+    raw = config.get("trigger_words")
+    words: set[str] = set()
+    if raw and isinstance(raw, list):
+        for item in raw:
+            for word in str(item).split(","):
+                w = word.strip().lower()
+                if w:
+                    words.add(w)
+    GROUP_A_FLAGS.clear()
+    GROUP_A_FLAGS.update(words if words else _DEFAULT_TRIGGER_WORDS)
 
 
 def check_group_a(ctx: Dict[str, Any]) -> bool:

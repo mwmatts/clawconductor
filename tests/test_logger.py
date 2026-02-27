@@ -7,7 +7,7 @@ import json
 import pytest
 
 import clawconductor.logger as logger_mod
-from clawconductor.logger import log_model_call
+from clawconductor.logger import log_decision, log_model_call
 from clawconductor.router import route
 
 
@@ -18,16 +18,16 @@ def _ctx(**kwargs):
 
 
 # ---------------------------------------------------------------------------
-# log_decision (via route)
+# log_decision (called explicitly — route() no longer logs internally)
 # ---------------------------------------------------------------------------
 
 def test_log_decision_creates_file():
-    route(_ctx())
+    log_decision(route(_ctx()))
     assert logger_mod._DECISION_LOG.exists()
 
 
 def test_log_decision_routing_fields():
-    route(_ctx())
+    log_decision(route(_ctx()))
     entry = json.loads(logger_mod._DECISION_LOG.read_text().strip())
     assert entry["component"] == "clawconductor"
     assert entry["task_id"] == "t-test"
@@ -41,7 +41,7 @@ def test_log_decision_routing_fields():
 
 
 def test_log_decision_escalation_fields():
-    route(_ctx(task_class="debugging"))
+    log_decision(route(_ctx(task_class="debugging")))
     entry = json.loads(logger_mod._DECISION_LOG.read_text().strip())
     assert entry["lane"] == "escalation"
     assert entry["escalation_decision"] is True
@@ -49,20 +49,20 @@ def test_log_decision_escalation_fields():
 
 
 def test_trace_id_propagated_from_ctx():
-    route(_ctx(trace_id="my-custom-trace-id"))
+    log_decision(route(_ctx(trace_id="my-custom-trace-id")))
     entry = json.loads(logger_mod._DECISION_LOG.read_text().strip())
     assert entry["trace_id"] == "my-custom-trace-id"
 
 
 def test_trace_id_auto_generated_when_absent():
-    route(_ctx())
+    log_decision(route(_ctx()))
     entry = json.loads(logger_mod._DECISION_LOG.read_text().strip())
     assert entry["trace_id"]  # non-empty UUID generated
 
 
 def test_multiple_decisions_appended():
-    route(_ctx(task_id="t-a"))
-    route(_ctx(task_id="t-b"))
+    log_decision(route(_ctx(task_id="t-a")))
+    log_decision(route(_ctx(task_id="t-b")))
     lines = logger_mod._DECISION_LOG.read_text().strip().splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["task_id"] == "t-a"

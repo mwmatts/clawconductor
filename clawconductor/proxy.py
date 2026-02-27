@@ -28,10 +28,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from . import events, metrics as metrics_mod
-from .classifier import GROUP_A_FLAGS
+from .classifier import GROUP_A_FLAGS, configure as _configure_classifier
 from .key_selector import select_key
 from .loop_guard import LoopGuard
-from .router import route
+from .logger import log_decision as _log_decision
+from .router import route, RoutingDecision
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("clawconductor.proxy")
@@ -68,6 +69,7 @@ def _startup() -> None:
     global _config, _upstream_url
     _config = _load_config()
     _upstream_url = _config.get("upstream_url", "http://localhost:4000").rstrip("/")
+    _configure_classifier(_config)
     logger.info("ClawConductor proxy started. Upstream: %s", _upstream_url)
     events.init()
     events.record("startup", reason=f"ClawConductor started. Upstream: {_upstream_url}")
@@ -428,6 +430,22 @@ async def chat_completions(request: Request) -> Any:
 
     tier_display = _config.get("tier_display_models", {})
     actual_model = tier_display.get(decision.tier, decision.tier)
+
+    # --- Routing decision log ---
+    # Log here (not inside route()) so we can reflect the actual lane used,
+    # including budget fallback overrides.
+    fb_model = _config.get("budget_fallback", {}).get("model", "gemini-2.5-flash")
+    if _budget_fallback_active.get(decision.lane, False):
+        _log_decision(RoutingDecision(
+            task_id=decision.task_id,
+            trace_id=decision.trace_id,
+            triggered_groups=decision.triggered_groups,
+            lane="fallback",
+            tier="fallback",
+            reason=f"budget fallback — {decision.lane} lane budget exceeded, serving via {fb_model}",
+        ))
+    else:
+        _log_decision(decision)
 
     # --- Metrics + event recording ---
     if decision.lane == "escalation":
