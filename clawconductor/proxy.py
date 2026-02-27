@@ -331,9 +331,23 @@ def _task_class_from_messages(messages: list) -> str | None:
     return None
 
 
+def _last_user_message_text(messages: list) -> str:
+    """Return the lowercased text of the last user message, for phrase matching."""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content") or ""
+            if isinstance(content, list):
+                content = " ".join(
+                    part.get("text", "") for part in content if isinstance(part, dict)
+                )
+            return content.lower()
+    return ""
+
+
 def _build_ctx(body: dict, task_id: str) -> dict:
     messages = body.get("messages", [])
     task_class = _task_class_from_messages(messages)
+    message_text = _last_user_message_text(messages)
 
     xcc = body.get("x_clawconductor") or {}
     signals = xcc.get("signals", []) if isinstance(xcc, dict) else []
@@ -348,6 +362,7 @@ def _build_ctx(body: dict, task_id: str) -> dict:
         "retry_count": int(retry_count),
         "max_retries": 2,
         "consecutive_tool_failures": _failure_counts[task_id],
+        "message_text": message_text,
         **({"task_class": task_class} if task_class else {}),
     }
 

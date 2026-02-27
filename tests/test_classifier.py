@@ -2,6 +2,7 @@
 
 import pytest
 
+import clawconductor.classifier as _classifier_mod
 from clawconductor.classifier import (
     check_group_a,
     check_group_b,
@@ -28,6 +29,32 @@ def test_group_a_case_insensitive():
 def test_group_a_no_flag():
     assert check_group_a({}) is False
     assert check_group_a({"task_class": "regular"}) is False
+
+
+# --- Group A phrase matching ---
+
+def test_group_a_fires_on_phrase():
+    """A phrase in TRIGGER_PHRASES fires Group A via message_text."""
+    _classifier_mod.TRIGGER_PHRASES[:] = ["help me decide"]
+    try:
+        assert check_group_a({"message_text": "I need help me decide between these two options"}) is True
+    finally:
+        _classifier_mod.TRIGGER_PHRASES.clear()
+
+
+def test_group_a_phrase_no_match():
+    """A message with no matching phrase does not fire Group A via phrase path."""
+    _classifier_mod.TRIGGER_PHRASES[:] = ["help me decide"]
+    try:
+        assert check_group_a({"message_text": "just tell me what happened"}) is False
+    finally:
+        _classifier_mod.TRIGGER_PHRASES.clear()
+
+
+def test_group_a_phrases_disabled_when_list_empty():
+    """Phrase matching is off by default (empty TRIGGER_PHRASES)."""
+    assert _classifier_mod.TRIGGER_PHRASES == []
+    assert check_group_a({"message_text": "help me decide which database to use"}) is False
 
 
 # --- Group B ---

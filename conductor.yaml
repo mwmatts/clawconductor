@@ -34,6 +34,12 @@ litellm_keys:
   escalation: os.environ/CLAWCONDUCTOR_ESCALATION_KEY
   fallback: os.environ/CLAWCONDUCTOR_FALLBACK_KEY
 
+# Multi-word phrase triggers for Group A — opt-in only.
+# Phrase matching is disabled when this list is empty.
+# Uncomment and paste phrases from the Layperson template in the README to enable.
+# Each item is matched as a case-insensitive substring of the user message.
+trigger_phrases: []
+
 # Group A escalation trigger words — edit this list to match your agent's vocabulary.
 # Each item may be a single word or a comma-separated string of words.
 trigger_words:

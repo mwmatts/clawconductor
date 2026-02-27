@@ -34,13 +34,40 @@ _DEFAULT_TRIGGER_WORDS: frozenset[str] = frozenset({
 # Starts equal to the defaults so the classifier works without any config call.
 GROUP_A_FLAGS: set[str] = set(_DEFAULT_TRIGGER_WORDS)
 
+# Layperson phrase examples from the README — provided as a reference default set.
+# NOT active unless loaded via configure() from conductor.yaml trigger_phrases.
+_DEFAULT_TRIGGER_PHRASES: tuple[str, ...] = (
+    "figure out",
+    "help me understand",
+    "what should i",
+    "how do i",
+    "is it better to",
+    "what's the difference",
+    "walk me through",
+    "i'm not sure",
+    "i don't know how",
+    "can you explain",
+    "why is it",
+    "what would happen if",
+    "help me decide",
+    "what are my options",
+    "something is wrong",
+    "it's not working",
+    "i think i messed up",
+)
+
+# Active phrase list — populated from conductor.yaml trigger_phrases at startup.
+# Empty by default; phrase matching is disabled until explicitly configured.
+TRIGGER_PHRASES: list[str] = []
+
 
 def configure(config: dict) -> None:
-    """Update GROUP_A_FLAGS from the trigger_words list in config.
+    """Update GROUP_A_FLAGS and TRIGGER_PHRASES from config.
 
-    Supports both one-word-per-item and comma-separated-per-item formats,
-    matching the template examples in the README.  Falls back to
-    _DEFAULT_TRIGGER_WORDS if trigger_words is absent or empty.
+    trigger_words: supports one-word-per-item and comma-separated formats.
+      Falls back to _DEFAULT_TRIGGER_WORDS if absent or empty.
+    trigger_phrases: each item is a phrase for substring match against the
+      full user message (case-insensitive). Empty by default — opt-in only.
     """
     raw = config.get("trigger_words")
     words: set[str] = set()
@@ -53,12 +80,26 @@ def configure(config: dict) -> None:
     GROUP_A_FLAGS.clear()
     GROUP_A_FLAGS.update(words if words else _DEFAULT_TRIGGER_WORDS)
 
+    raw_phrases = config.get("trigger_phrases")
+    phrases: list[str] = []
+    if raw_phrases and isinstance(raw_phrases, list):
+        for item in raw_phrases:
+            p = str(item).strip().lower()
+            if p:
+                phrases.append(p)
+    TRIGGER_PHRASES.clear()
+    TRIGGER_PHRASES.extend(phrases)
+
 
 def check_group_a(ctx: Dict[str, Any]) -> bool:
-    """Explicit task-class flag present."""
+    """Task-class keyword or trigger phrase present in the user message."""
     task_class = ctx.get("task_class", "")
-    if isinstance(task_class, str):
-        return task_class.lower() in GROUP_A_FLAGS
+    if isinstance(task_class, str) and task_class.lower() in GROUP_A_FLAGS:
+        return True
+    if TRIGGER_PHRASES:
+        message_text = ctx.get("message_text", "").lower()
+        if message_text and any(phrase in message_text for phrase in TRIGGER_PHRASES):
+            return True
     return False
 
 
