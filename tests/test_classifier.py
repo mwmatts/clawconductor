@@ -57,6 +57,34 @@ def test_group_a_phrases_disabled_when_list_empty():
     assert check_group_a({"message_text": "help me decide which database to use"}) is False
 
 
+# --- configure() trigger_words loading ---
+
+def test_configure_loads_custom_trigger_words():
+    """configure() with a trigger_words list replaces GROUP_A_FLAGS with those words."""
+    saved = set(_classifier_mod.GROUP_A_FLAGS)
+    try:
+        _classifier_mod.configure({"trigger_words": ["foo", "bar", "baz"]})
+        assert _classifier_mod.GROUP_A_FLAGS == {"foo", "bar", "baz"}
+    finally:
+        _classifier_mod.GROUP_A_FLAGS.clear()
+        _classifier_mod.GROUP_A_FLAGS.update(saved)
+
+
+def test_configure_falls_back_to_defaults_when_no_trigger_words():
+    """configure() with no trigger_words field resets GROUP_A_FLAGS to the built-in defaults."""
+    saved = set(_classifier_mod.GROUP_A_FLAGS)
+    try:
+        _classifier_mod.configure({"trigger_words": ["custom"]})
+        assert _classifier_mod.GROUP_A_FLAGS == {"custom"}
+        _classifier_mod.configure({})
+        assert "plan" in _classifier_mod.GROUP_A_FLAGS
+        assert "research" in _classifier_mod.GROUP_A_FLAGS
+        assert "custom" not in _classifier_mod.GROUP_A_FLAGS
+    finally:
+        _classifier_mod.GROUP_A_FLAGS.clear()
+        _classifier_mod.GROUP_A_FLAGS.update(saved)
+
+
 # --- Group B ---
 
 def test_group_b_fires_at_threshold():
