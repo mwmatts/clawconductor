@@ -18,6 +18,16 @@ GROUP_A_FLAGS: set[str] = {
     "strategy",
     "synthesis",
     "research",
+    "refactor",
+    "optimize",
+    "migrate",
+    "audit",
+    "review",
+    "diagnose",
+    "evaluate",
+    "analyze",
+    "compare",
+    "recommend",
 }
 
 
