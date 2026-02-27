@@ -466,7 +466,8 @@ async def chat_completions(request: Request) -> Any:
                 _notify_escalation(actual_model, decision.triggered_groups, decision.reason, task_class=ctx.get("task_class", ""))
             )
 
-    forwarded_body = {**body, "model": model_alias}
+    forwarded_body = {k: v for k, v in body.items() if k != "x_clawconductor"}
+    forwarded_body["model"] = model_alias
     context_limit = _config.get("context_token_limit", 40000)
 
     injected_messages = _inject_routing_metadata(
@@ -719,22 +720,32 @@ async def admin_daily_report(date: str | None = None) -> dict:
         lines.append("Fallback timeline:")
         for row in fallback_rows:
             ts = row.get("ts", "")[:16]
-            t = row.get("type", "")
+            etype = row.get("event_type", "")
             lane = row.get("lane", "")
-            icon = "⚠️" if "fallback" in t else "✅"
-            lines.append(f"  {icon} {ts}  {lane}  {t}")
+            reason = row.get("reason", "")
+            icon = "⚠️" if etype == "budget_fallback" else "✅"
+            label = "Budget cap hit" if etype == "budget_fallback" else "Restored"
+            lines.append(f"  {icon} {ts}  {lane}  {label}  ({reason})")
     else:
         lines.append("Fallback events: none ✓")
 
-    # Current status
+    # Current status — live state for today, derived state for historical dates
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines.append("")
-    routing_fb = _budget_fallback_active.get("routing", False)
-    escalation_fb = _budget_fallback_active.get("escalation", False)
-    if routing_fb or escalation_fb:
-        active = [l for l, v in [("routing", routing_fb), ("escalation", escalation_fb)] if v]
-        lines.append(f"⚠️ Currently in fallback: {', '.join(active)}")
+    if day == today:
+        routing_fb = _budget_fallback_active.get("routing", False)
+        escalation_fb = _budget_fallback_active.get("escalation", False)
+        if routing_fb or escalation_fb:
+            active = [l for l, v in [("routing", routing_fb), ("escalation", escalation_fb)] if v]
+            lines.append(f"⚠️ Currently in fallback: {', '.join(active)}")
+        else:
+            lines.append("Status now: nominal ✓")
     else:
-        lines.append("Status now: nominal ✓")
+        unrestored = counts.get("budget_fallback", 0) - counts.get("budget_restored", 0)
+        if unrestored > 0:
+            lines.append(f"⚠️ End of day: {unrestored} fallback(s) were not cleared")
+        else:
+            lines.append("End of day: nominal ✓")
 
     return {"report": "\n".join(lines), "date": day}
 
@@ -751,4 +762,12 @@ async def admin_reset_metrics() -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "upstream": _upstream_url}
+    routing_tier = _config.get("routing_lane", {}).get("tier", "lightweight")
+    escalation_tier = _config.get("escalation_lane", {}).get("tier", "advanced")
+    tiers = _config.get("tiers", {})
+    return {
+        "status": "ok",
+        "upstream": _upstream_url,
+        "routing_lane": tiers.get(routing_tier, f"tier/{routing_tier}"),
+        "escalation_lane": tiers.get(escalation_tier, f"tier/{escalation_tier}"),
+    }

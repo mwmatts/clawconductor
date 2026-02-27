@@ -167,12 +167,12 @@ def daily_summary(date: str | None = None) -> dict[str, Any]:
                 for g in g_str.split(","):
                     trigger_counts[g] = trigger_counts.get(g, 0) + 1
 
-            # Fallback events with cleared status
+            # Fallback events with event_type for icon selection
             cur = _conn.execute(
-                "SELECT lane, ts, reason FROM events WHERE date(ts) = ? AND event_type IN ('budget_fallback','budget_restored') ORDER BY ts",
+                "SELECT lane, ts, event_type, reason FROM events WHERE date(ts) = ? AND event_type IN ('budget_fallback','budget_restored') ORDER BY ts",
                 [day],
             )
-            fallback_rows = [{"lane": r[0], "ts": r[1], "type": r[2]} for r in cur.fetchall()]
+            fallback_rows = [{"lane": r[0], "ts": r[1], "event_type": r[2], "reason": r[3]} for r in cur.fetchall()]
 
         return {
             "date": day,
