@@ -312,6 +312,28 @@ trigger_words:
 - *"Rename this variable to something clearer"* — simple edit
 - *"Summarize this file"* — lightweight task
 - *"What time is it in Tokyo?"* — factual lookup
+- *"That research was really helpful, now do X"* — referential use, not a new request
+- *"The debug output looks correct"* — describing a result, not requesting a task
+- *"ok good, now do Y"* (follow-up after a "research X" request within 5 min) — cooldown suppression
+
+---
+
+#### Group A False Positive Suppression
+
+Group A uses three layers of filtering to avoid escalating when a trigger word appears incidentally rather than as a genuine new task request.
+
+**1. Word-boundary matching** — Keywords must appear as complete words. `plan` does not match `explanation`, `audit` does not match `beautiful`, `review` does not match `preview`.
+
+**2. Referential-use filter** — Keywords preceded by back-reference or past-tense markers are suppressed. The 1–2 words before the match are checked against a list including `that`, `the`, `this`, `your`, `was`, `were`, `did`, `finished`, `completed`, `done`. If any match, the keyword is treated as descriptive rather than imperative and no escalation fires.
+
+**3. Cooldown window** — After a Group A escalation fires, the same keyword is suppressed for a configurable window (default 300 seconds). This prevents carry-over false positives where the user's follow-up message references the keyword from their original request — e.g. sending *"research X"* and then replying *"ok that research looks good, now do Y"* within the window. The cooldown applies only when **Group A is the sole trigger** — if Groups B, C, D, or E also fire, escalation proceeds normally regardless of cooldown state.
+
+Configure the cooldown in `conductor.yaml`:
+```yaml
+group_a_cooldown_seconds: 300  # set to 0 to disable
+```
+
+The cooldown is per-keyword and resets at process restart. A different trigger word is never suppressed by a prior escalation — only the exact same keyword within the window.
 
 ---
 
@@ -394,9 +416,7 @@ If `retry_count` exceeds `max_retries` (default: 2), the request is routed back 
 
 Groups C, D, and E (ambiguous requirements, validation failures, high-stakes actions) require signals to be injected programmatically into the request context. ClawConductor cannot detect these conditions from natural language automatically — your agent or orchestration layer must tag them explicitly. Groups A and B work automatically with no changes needed.
 
-The trigger word list in Group A currently lives in `classifier.py` rather than in `conductor.yaml`. This means adding or changing trigger words requires editing source code rather than config. This is a known limitation and will be moved to config in a future release.
-
-The layperson trigger word template uses phrase matching rather than single-word matching. Single-word matching (the current default in `classifier.py`) will not catch multi-word phrases like "help me decide" or "something is wrong." Verify your classifier implementation supports phrase matching before using that template.
+The layperson trigger word template uses phrase matching rather than single-word matching. Single-word matching (the current default) will not catch multi-word phrases like "help me decide" or "something is wrong." Phrase matching is opt-in via the `trigger_phrases` list in `conductor.yaml` — see the classifier for details.
 
 The free fallback safety net (a guaranteed model below all tiers that fires if all tier budgets are exhausted) has not been verified as implemented. If OpenClaw going down during a budget exhaustion event is unacceptable for your use case, confirm this is in place before relying on it in production.
 
@@ -406,9 +426,7 @@ The free fallback safety net (a guaranteed model below all tiers that fires if a
 
 Short-term items being tracked:
 
-- Move `trigger_words` from `classifier.py` into `conductor.yaml` so word lists are configurable without touching source code
 - Verify and implement the guaranteed free fallback model below all tiers
-- Add phrase matching support to `classifier.py` to enable the layperson trigger template
 - Natural language auto-detection for Groups C, D, and E (currently requires programmatic injection)
 
 ---
@@ -542,6 +560,8 @@ tier_display_models:
 
 context_token_limit: 40000
 
+group_a_cooldown_seconds: 300      # suppress same-keyword re-escalation within this window (seconds)
+
 budget_fallback:
   model: gemini-2.5-flash             # replace with your preferred free fallback model
   display_name: Gemini 2.5 Flash
@@ -639,7 +659,7 @@ If the health endpoint returns an error or the log shows no entries after sendin
 | `clawconductor/router.py` | Routing decisions — which lane, which tier, why |
 | `clawconductor/key_selector.py` | Per-lane LiteLLM virtual key resolution |
 | `clawconductor/logger.py` | Structured JSON decision logging + cost logging |
-| `clawconductor/loop_guard.py` | One-escalation-per-task enforcement |
+| `clawconductor/loop_guard.py` | One-escalation-per-task enforcement (`LoopGuard`) and Group A cooldown suppression (`EscalationCooldown`) |
 | `conductor.yaml` | Runtime configuration — models, tiers, trigger words |
 
 ---
