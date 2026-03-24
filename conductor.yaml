@@ -1,6 +1,6 @@
 # ClawConductor configuration
 
-upstream_url: http://localhost:4000
+upstream_url: http://localhost:8766
 
 routing_lane:
   tier: lightweight
